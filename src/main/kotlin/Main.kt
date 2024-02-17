@@ -2,8 +2,11 @@ import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.ToNumberPolicy
 import com.github.ajalt.clikt.core.CliktCommand
+import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.*
+import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.path
+import com.sun.media.sound.InvalidDataException
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -26,6 +29,24 @@ fun loadBlockmap(blockmapPath: Path): Map<*, *> {
             }
         }
     }
+}
+
+fun loadMetadataFromBlockmap(blockmapPath: Path): Map<*, *>? {
+    val m = loadBlockmap(blockmapPath)
+    if (m["version"] != "2") {
+        println("WARNING: Version ${m["version"]} is not supported.")
+    }
+    val files = m["files"]
+
+    if (files is List<*>) {
+        if (files.size > 1) {
+            println("WARNING: More than 1 file.")
+        }
+
+        return files.first() as? Map<*, *>
+    }
+
+    return null
 }
 
 fun getOffsetSizePairs(offset: Int, sizes: Sequence<Int>): Sequence<Pair<Int, Int>> {
@@ -75,44 +96,82 @@ fun verifyDataByMetadata(data: ByteArray, metadata: Map<*, *>): VerificationResu
     return VerificationResult.Ok(checksums.size)
 }
 
-fun run(exePath: Path) {
+fun verify(exePath: Path) {
     val blockmapPath = exePath.resolveSibling("${exePath.fileName}.blockmap")
     val data = exePath.toFile().readBytes()
-    val m = loadBlockmap(blockmapPath)
-    if (m["version"] != "2") {
-        println("WARNING: Version ${m["version"]} is not supported.")
-    }
-    val files = m["files"]
+    val metadata = loadMetadataFromBlockmap(blockmapPath)
+    if (metadata != null) {
+        when (val res = verifyDataByMetadata(data, metadata)) {
+            is VerificationResult.Ok ->
+                println("Succeed to verify ${res.nBlocks} blocks")
 
-    if (files is List<*>) {
-        if (files.size > 1) {
-            println("WARNING: More than 1 file.")
-        }
+            is VerificationResult.Invalid ->
+                println("Invalid metadata: ${res.message}")
 
-        val metadata = files[0] as? Map<*, *>
-        if (metadata != null) {
-            when (val res = verifyDataByMetadata(data, metadata)) {
-                is VerificationResult.Ok ->
-                    println("Succeed to verify ${res.nBlocks} blocks")
-
-                is VerificationResult.Invalid ->
-                    println("Invalid metadata: ${res.message}")
-
-                is VerificationResult.Failed ->
-                    println("Verification failed: ${res.message}")
-            }
+            is VerificationResult.Failed ->
+                println("Verification failed: ${res.message}")
         }
     }
+}
+
+fun compare(oldPath: Path, newPath: Path) {
+    fun load(p: Path): Result<Sequence<Pair<String, Int>>> {
+        val metadata =
+            loadMetadataFromBlockmap(p) ?: return Result.failure(InvalidDataException("Unable to load metadata"))
+        val checksums =
+            metadata["checksums"] as? List<*>
+                ?: return Result.failure(InvalidDataException("'checksums' is not a valid array"))
+        val sizes =
+            metadata["sizes"] as? List<*> ?: return Result.failure(InvalidDataException("'sizes' is not a valid array"))
+        if (checksums.size != sizes.size) {
+            return Result.failure(InvalidDataException("The lengths of 'checksums' and 'sizes' are not the same"))
+        }
+
+        return Result.success(
+            checksums.asSequence().map { it as String }
+                .zip(sizes.asSequence().map { (it as Long).toInt() }).map { (checksum, size) ->
+                    checksum to size
+                }
+        )
+    }
+
+    val m = load(oldPath).getOrThrow().toMap()
+
+    var skipped: Long = 0
+    var total: Long = 0
+
+    for ((checksum, size) in load(newPath).getOrThrow()) {
+        total += size
+        if (m.containsKey(checksum) && m[checksum] == size) {
+            skipped += size
+        }
+    }
+
+    val ratio = skipped.toFloat() / total
+    println("total = ${total}, skipped = ${skipped}, ratio = ${"%.2f%%".format(ratio * 100)}")
 }
 
 class Verify : CliktCommand() {
     private val path: Path by argument().path(mustExist = true).help("Path to executable")
 
     override fun run() {
-        run(path)
+        verify(path)
     }
 }
 
+class Compare : CliktCommand() {
+    val oldPath: Path? by option("--old").path(mustExist = true).help("Path to old blockmap")
+    val newPath: Path? by option("--new").path(mustExist = true).help("Path to new blockmap")
+
+    override fun run() {
+        compare(oldPath!!, newPath!!)
+    }
+}
+
+class MainCommand : CliktCommand() {
+    override fun run() {}
+}
+
 fun main(args: Array<String>) {
-    Verify().main(args)
+    MainCommand().subcommands(Verify(), Compare()).main(args)
 }
