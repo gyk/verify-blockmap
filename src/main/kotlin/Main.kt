@@ -1,3 +1,6 @@
+import arrow.core.Either
+import arrow.core.left
+import arrow.core.right
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.ToNumberPolicy
@@ -6,7 +9,6 @@ import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.*
 import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.path
-import com.sun.media.sound.InvalidDataException
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -114,33 +116,38 @@ fun verify(exePath: Path) {
     }
 }
 
-fun compare(oldPath: Path, newPath: Path) {
-    fun load(p: Path): Result<Sequence<Pair<String, Int>>> {
+fun compare(oldPath: Path, newPath: Path): Either<String, Unit> {
+    fun load(p: Path): Either<String, Sequence<Pair<String, Int>>> {
         val metadata =
-            loadMetadataFromBlockmap(p) ?: return Result.failure(InvalidDataException("Unable to load metadata"))
+            loadMetadataFromBlockmap(p) ?: return "Unable to load metadata".left()
         val checksums =
             metadata["checksums"] as? List<*>
-                ?: return Result.failure(InvalidDataException("'checksums' is not a valid array"))
+                ?: return "'checksums' is not a valid array".left()
         val sizes =
-            metadata["sizes"] as? List<*> ?: return Result.failure(InvalidDataException("'sizes' is not a valid array"))
+            metadata["sizes"] as? List<*> ?: return "'sizes' is not a valid array".left()
         if (checksums.size != sizes.size) {
-            return Result.failure(InvalidDataException("The lengths of 'checksums' and 'sizes' are not the same"))
+            return "The lengths of 'checksums' and 'sizes' are not the same".left()
         }
 
-        return Result.success(
-            checksums.asSequence().map { it as String }
-                .zip(sizes.asSequence().map { (it as Long).toInt() }).map { (checksum, size) ->
-                    checksum to size
-                }
-        )
+        return checksums.asSequence().map { it as String }
+            .zip(sizes.asSequence().map { (it as Long).toInt() })
+            .map { (checksum, size) ->
+                checksum to size
+            }.right()
     }
 
-    val m = load(oldPath).getOrThrow().toMap()
+    val m = load(oldPath).fold(
+        { return it.left() },
+        { it.toMap() }
+    )
 
     var skipped: Long = 0
     var total: Long = 0
 
-    for ((checksum, size) in load(newPath).getOrThrow()) {
+    for ((checksum, size) in load(newPath).fold(
+        { return it.left() },
+        { it }
+    )) {
         total += size
         if (m.containsKey(checksum) && m[checksum] == size) {
             skipped += size
@@ -149,6 +156,7 @@ fun compare(oldPath: Path, newPath: Path) {
 
     val ratio = skipped.toFloat() / total
     println("total = ${total}, skipped = ${skipped}, ratio = ${"%.2f%%".format(ratio * 100)}")
+    return Unit.right()
 }
 
 class Verify : CliktCommand() {
@@ -160,8 +168,8 @@ class Verify : CliktCommand() {
 }
 
 class Compare : CliktCommand() {
-    val oldPath: Path? by option("--old").path(mustExist = true).help("Path to old blockmap")
-    val newPath: Path? by option("--new").path(mustExist = true).help("Path to new blockmap")
+    private val oldPath: Path? by option("--old").path(mustExist = true).help("Path to old blockmap")
+    private val newPath: Path? by option("--new").path(mustExist = true).help("Path to new blockmap")
 
     override fun run() {
         compare(oldPath!!, newPath!!)

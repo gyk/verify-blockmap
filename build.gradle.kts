@@ -13,6 +13,7 @@ repositories {
 dependencies {
     implementation("com.github.ajalt.clikt:clikt:4.2.2")
     implementation("com.google.code.gson:gson:2.10.1")
+    implementation("io.arrow-kt:arrow-core:1.2.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.77")
     testImplementation(kotlin("test"))
 }
