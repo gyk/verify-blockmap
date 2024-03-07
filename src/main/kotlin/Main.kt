@@ -16,6 +16,9 @@ import java.nio.file.Path
 import java.util.Base64
 import java.util.zip.GZIPInputStream
 import org.bouncycastle.crypto.digests.Blake2bDigest
+import java.security.MessageDigest
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 const val DIGEST_SIZE: Int = 18
 
@@ -159,6 +162,50 @@ fun compare(oldPath: Path, newPath: Path): Either<String, Unit> {
     return Unit.right()
 }
 
+fun loadPackageJson(jsonPath: Path): Map<*, *> {
+    Files.newInputStream(jsonPath).buffered().use {
+        InputStreamReader(it, StandardCharsets.UTF_8).use { reader ->
+            val jsonContent = reader.readText()
+            val gson: Gson = GsonBuilder().create()
+            return gson.fromJson(jsonContent, Map::class.java)
+        }
+    }
+}
+
+fun currentDatetime(): String {
+    val currentDateTime = LocalDateTime.now()
+    val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+    val formattedDateTime = currentDateTime.format(formatter)
+    return formattedDateTime
+}
+
+fun generateYaml(exePath: Path, jsonPath: Path?) {
+    val md: MessageDigest = MessageDigest.getInstance("SHA-512")
+    val enc = Base64.getEncoder()
+
+    val fileName = exePath.fileName
+    val data = exePath.toFile().readBytes()
+    val fileSize = data.count()
+
+    val messageDigest = md.digest(data)
+    val sha512 = enc.encodeToString(messageDigest)
+
+    val version = jsonPath?.let { loadPackageJson(it)["version"] } ?: "FIXME"
+    val datetime = currentDatetime()
+
+    println(
+        """version: $version
+files:
+  - url: $fileName
+    sha512: $sha512
+    size: $fileSize
+path: $fileName
+sha512: $sha512
+releaseDate: '$datetime'
+""".trimIndent()
+    )
+}
+
 class Verify : CliktCommand() {
     private val path: Path by argument().path(mustExist = true).help("Path to executable")
 
@@ -176,10 +223,19 @@ class Compare : CliktCommand() {
     }
 }
 
+class GenYaml : CliktCommand() {
+    private val path: Path by argument().path(mustExist = true).help("Path to executable")
+    private val jsonPath: Path? by option("--json").path(mustExist = true).help("Path to package.json")
+
+    override fun run() {
+        generateYaml(path, jsonPath)
+    }
+}
+
 class MainCommand : CliktCommand() {
     override fun run() {}
 }
 
 fun main(args: Array<String>) {
-    MainCommand().subcommands(Verify(), Compare()).main(args)
+    MainCommand().subcommands(Verify(), Compare(), GenYaml()).main(args)
 }

@@ -17,3 +17,11 @@ Compare two blockmaps.
 ```sh
 compare --old $PATH_TO_OLD_BLOCKMAP --new $PATH_TO_NEW_BLOCKMAP
 ```
+
+## `gen-yaml` subcommand
+
+Generate `latest.yml`.
+
+```sh
+gen-yaml $PATH_TO_EXE --json $PATH_TO_PACKAGE_JSON
+```
