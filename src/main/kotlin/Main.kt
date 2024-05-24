@@ -1,26 +1,42 @@
 import arrow.core.Either
 import arrow.core.left
 import arrow.core.right
+import com.github.ajalt.clikt.core.CliktCommand
+import com.github.ajalt.clikt.core.subcommands
+import com.github.ajalt.clikt.parameters.arguments.argument
+import com.github.ajalt.clikt.parameters.arguments.help
+import com.github.ajalt.clikt.parameters.options.help
+import com.github.ajalt.clikt.parameters.options.option
+import com.github.ajalt.clikt.parameters.types.path
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.ToNumberPolicy
-import com.github.ajalt.clikt.core.CliktCommand
-import com.github.ajalt.clikt.core.subcommands
-import com.github.ajalt.clikt.parameters.arguments.*
-import com.github.ajalt.clikt.parameters.options.*
-import com.github.ajalt.clikt.parameters.types.path
+import org.bouncycastle.crypto.digests.Blake2bDigest
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.Base64
-import java.util.zip.GZIPInputStream
-import org.bouncycastle.crypto.digests.Blake2bDigest
 import java.security.MessageDigest
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.*
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
+import kotlin.io.path.exists
+import kotlin.io.path.name
 
 const val DIGEST_SIZE: Int = 18
+
+private fun computeChecksum(data: ByteArray, offset: Int, length: Int): String {
+    val blake = Blake2bDigest(null, DIGEST_SIZE, null, null)
+    val out = ByteArray(DIGEST_SIZE)
+    val enc = Base64.getEncoder()
+
+    blake.update(data, offset, length)
+    blake.doFinal(out, 0)
+    return enc.encodeToString(out)
+}
 
 fun loadBlockmap(blockmapPath: Path): Map<*, *> {
     Files.newInputStream(blockmapPath).buffered().use {
@@ -31,6 +47,21 @@ fun loadBlockmap(blockmapPath: Path): Map<*, *> {
                     .setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE)
                     .create()
                 return gson.fromJson(jsonContent, Map::class.java)
+            }
+        }
+    }
+}
+
+// Only for testing
+fun saveBlockmapAsOneBlock(exePath: Path, blockmapPath: Path) {
+    val bytes = Files.readAllBytes(exePath)
+    val size = bytes.size
+    val checksum = computeChecksum(bytes, 0, size)
+
+    Files.newOutputStream(blockmapPath).use {
+        GZIPOutputStream(it).use { gzipOututStream ->
+            OutputStreamWriter(gzipOututStream, StandardCharsets.UTF_8).use { writer ->
+                writer.write("""{"version":"2","files":[{"name":"file","offset":0,"checksums":["$checksum"],"sizes":[$size]}]}""")
             }
         }
     }
@@ -77,19 +108,13 @@ fun verifyDataByMetadata(data: ByteArray, metadata: Map<*, *>): VerificationResu
     val offsetSizePairs = getOffsetSizePairs(offset, sizes.asSequence().map { (it as Long).toInt() })
     val checksumSeq = checksums.asSequence().map { it as String }
 
-    val blake = Blake2bDigest(null, DIGEST_SIZE, null, null)
-    val out = ByteArray(DIGEST_SIZE)
-    val enc = Base64.getEncoder()
-
     for ((offsetSize, checksum) in offsetSizePairs.zip(checksumSeq)) {
         val (ofs, len) = offsetSize
         if (ofs + len >= data.size) {
             break
         }
-        blake.reset()
-        blake.update(data, ofs, len)
-        blake.doFinal(out, 0)
-        val d = enc.encodeToString(out)
+
+        val d = computeChecksum(data, ofs, len)
         if (d != checksum) {
             return VerificationResult.Failed(
                 String.format(
@@ -232,10 +257,23 @@ class GenYaml : CliktCommand() {
     }
 }
 
+class WriteBlockmap1 : CliktCommand() {
+    private val exePath: Path by argument().path(mustExist = true).help("Path to executable")
+
+    override fun run() {
+        val blockmapPath = exePath.resolveSibling(exePath.name + ".blockmap")
+        if (blockmapPath.exists()) {
+            throw FileAlreadyExistsException(blockmapPath.toFile())
+        }
+
+        saveBlockmapAsOneBlock(exePath, blockmapPath)
+    }
+}
+
 class MainCommand : CliktCommand() {
     override fun run() {}
 }
 
 fun main(args: Array<String>) {
-    MainCommand().subcommands(Verify(), Compare(), GenYaml()).main(args)
+    MainCommand().subcommands(Verify(), Compare(), GenYaml(), WriteBlockmap1()).main(args)
 }
